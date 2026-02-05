@@ -1,5 +1,6 @@
 import { useEffect, useMemo } from 'react';
 import { GearIcon } from '@radix-ui/react-icons';
+import { useShallow } from 'zustand/react/shallow';
 import { ConnectionStatus } from './components/ConnectionStatus';
 import { AgentCard } from './components/AgentCard';
 import { ActivityFeed } from './components/ActivityFeed';
@@ -65,8 +66,8 @@ export default function App() {
   const gateway = useGateway();
   const { status, openSettings, connect, disconnect, setGatewayController } = useConnectionStore();
   const clearTokenSensitiveDataOnDisconnect = useAgentsStore((state) => state.clearTokenSensitiveDataOnDisconnect);
-  const agents = useAgentsStore((state) => state.agentOrder.map((id) => state.agentsById[id]));
-  const chatsByAgentId = useAgentsStore((state) => state.chatsByAgentId);
+  const agents = useAgentsStore(useShallow((state) => state.agentOrder.map((id) => state.agentsById[id])));
+  const chatsByAgentId = useAgentsStore(useShallow((state) => state.chatsByAgentId));
 
   useEffect(() => {
     setGatewayController(gateway);

@@ -1,6 +1,7 @@
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { ChevronDownIcon } from '@radix-ui/react-icons';
 import { useMemo } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useActivityStore } from '../stores/activity';
 import { useAgentsStore } from '../stores/agents';
 import type { ActivityType } from '../lib/gateway/types';
@@ -10,7 +11,7 @@ const types: (ActivityType | 'all')[] = ['all', 'run_started', 'run_ended', 'cha
 
 export function ActivityFeed() {
   const { items, filter, setFilter } = useActivityStore();
-  const agents = useAgentsStore((state) => state.agentOrder.map((id) => state.agentsById[id]));
+  const agents = useAgentsStore(useShallow((state) => state.agentOrder.map((id) => state.agentsById[id])));
 
   const filtered = useMemo(() => {
     return items.filter((item) => {

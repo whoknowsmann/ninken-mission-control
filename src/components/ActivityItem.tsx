@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import type { ActivityItem as Item } from '../lib/gateway/types';
 
 const iconByType: Record<Item['type'], string> = {
@@ -11,7 +12,7 @@ const iconByType: Record<Item['type'], string> = {
   settings: '⚙'
 };
 
-export function ActivityItem({ item }: { item: Item }) {
+export const ActivityItem = memo(function ActivityItem({ item }: { item: Item }) {
   return (
     <li className="rounded-lg border border-white/10 bg-black/20 p-3">
       <div className="mb-1 flex items-center justify-between text-xs text-[var(--text-dim)]">
@@ -24,4 +25,4 @@ export function ActivityItem({ item }: { item: Item }) {
       </p>
     </li>
   );
-}
+});

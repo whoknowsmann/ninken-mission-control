@@ -1,9 +1,9 @@
-import { useState } from 'react';
+import { memo, useState } from 'react';
 import clsx from 'clsx';
 import type { AgentSummary, ThinkingLevel } from '../lib/gateway/types';
 import { AgentCardExpanded } from './AgentCardExpanded';
 
-export function AgentCard({
+export const AgentCard = memo(function AgentCard({
   agent,
   messages,
   onSendChat,
@@ -56,4 +56,4 @@ export function AgentCard({
       <p className="mt-3 text-xs text-[var(--text-dim)]">Tap to expand</p>
     </article>
   );
-}
+});
