@@ -1,74 +1,99 @@
-# Ninken Console Prototype 0.1
+# Ninken Console
 
-A lightweight mission control dashboard for monitoring and interacting with agents.
+Mission control dashboard for monitoring and interacting with OpenClaw/Clawdbot agents.
 
-## Stack
+## TL;DR
 
-- Vite 6 + React 19 + TypeScript
-- Zustand for state
-- Tailwind CSS 4 and CSS variables for theming
-- Radix UI (dialog + dropdown menu)
+- **What:** Web dashboard to monitor multiple AI agents in real-time
+- **Stack:** Vite 6 + React 19 + TypeScript + Zustand + Tailwind CSS 4
+- **Features:** Agent cards, streaming chat, activity feed, model/thinking controls
+- **Status:** Prototype 0.1 — functional with real WebSocket gateway support
+- **Created:** February 5, 2026
 
-## Run locally
+---
+
+## Quick Start
 
 ```bash
 npm install
 npm run dev
 ```
 
-Then open the local Vite URL shown in the terminal.
+Open the URL shown in terminal, click the gear icon, enter your gateway URL and token.
 
-## Gateway setup
+---
 
-1. Open **Gateway Settings** from the gear icon.
-2. Enter a valid `ws://` or `wss://` gateway URL.
-3. Enter a token and choose whether to remember it locally.
-4. Click **Connect**.
+## Features
 
-On connect, the app opens a WebSocket, sends auth (`{ "type": "auth", "token": "..." }` by default), calls `agents.list`, and hydrates the agent panel.
+| Feature | Status |
+|---------|--------|
+| Agent list with status indicators | ✅ |
+| Expandable agent cards | ✅ |
+| Streaming chat output | ✅ |
+| Send messages to agents | ✅ |
+| Stop running tasks | ✅ |
+| Model/thinking level switching | ✅ |
+| Activity feed with filters | ✅ |
+| Auto-reconnect with backoff | ✅ |
+| Mock mode for demos | ✅ |
 
-### RPC envelope pattern
+---
 
-The client uses JSON frames over WebSocket with a JSON-RPC-like structure:
+## Gateway Protocol
 
-- Request:
-  - `{ "id": "<uuid>", "type": "rpc", "method": "agents.list", "params": {}, "token": "...optional" }`
-- Success response:
-  - `{ "id": "<uuid>", "type": "rpc_result", "result": { ... } }`
-- Error response:
-  - `{ "id": "<uuid>", "type": "rpc_error", "error": { "message": "...", "code": "...", "data": any } }`
-- Event push:
-  - `{ "type": "event", "event": "presence" | "heartbeat" | "chat" | "agent", "data": { ... } }`
+The console connects via WebSocket using JSON-RPC-style frames:
 
-Supported outbound RPC methods used by the UI:
+```
+Request:  { "id": "<uuid>", "type": "rpc", "method": "agents.list", "params": {} }
+Response: { "id": "<uuid>", "type": "rpc_result", "result": {...} }
+Events:   { "type": "event", "event": "chat", "data": {...} }
+```
 
-- `agents.list`
-- `chat.send` (`{ sessionKey, message }`)
-- `chat.abort` (`{ sessionKey }`)
-- `sessions.patch` (`{ key, model, thinking }`)
+**Supported RPC methods:**
+- `agents.list` — Get all agents
+- `chat.send` — Send message to agent (`{ sessionKey, message }`)
+- `chat.abort` — Stop running task (`{ sessionKey }`)
+- `sessions.patch` — Update model/thinking (`{ key, model, thinking }`)
 
-### Auth mode
+**Event types:** `presence`, `heartbeat`, `chat`, `agent`
 
-- Default mode is auth frame on connect.
-- Optional fallback mode is per-message token (`authMode: 'per_message'`) in `GatewayClient`.
+---
 
-### Health + reconnect behavior
+## Configuration
 
-- Connection attempt timeout: ~9 seconds.
-- App-level ping every 20 seconds: `{ "type": "ping", "ts": <epoch_ms> }`.
-- Stale connection detection: if no frames are received for 60 seconds, the client reconnects.
-- Auto-reconnect backoff: `1s → 2s → 4s ...` capped at `15s`, unless user manually disconnects.
+| Env Variable | Purpose |
+|--------------|---------|
+| `VITE_USE_MOCK_GATEWAY` | Set to `true` for offline demo mode |
 
-### Troubleshooting
+---
 
-- **Connection timeout**: verify URL is reachable and supports WebSocket upgrades.
-- **Auth failures**: confirm token validity and gateway auth expectations (auth frame vs per-message token).
-- **No events after connect**: check server emits `event` frames and that session keys map to the expected agents.
+## Project Structure
 
-## Mock mode
+```
+src/
+├── components/     # React UI components
+├── lib/gateway/    # WebSocket client, events, types
+├── stores/         # Zustand state (agents, activity, connection)
+└── styles/         # Tailwind CSS + theme variables
+```
 
-Set `VITE_USE_MOCK_GATEWAY=true` to keep mock behavior for local demos.
+---
 
-## Notes
+## Troubleshooting
 
-- Token values are never logged.
+- **Connection timeout:** Check gateway URL is reachable (ws:// or wss://)
+- **Auth failures:** Verify token is correct
+- **No events:** Confirm gateway emits `event` frames with correct session keys
+
+---
+
+## See Also
+
+- [Ninken Console Prototype 0.1 Spec](https://github.com/whoknowsmann) — Original design doc
+- [OpenClaw](https://github.com/openclawbot/openclaw) — Gateway reference
+- [Clawdbot](https://github.com/clawdbot/clawdbot) — Agent framework
+
+---
+
+*Created: February 5, 2026*  
+*Status: Prototype — ready for testing*
