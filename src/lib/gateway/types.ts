@@ -44,3 +44,87 @@ export type ActivityItem = {
 };
 
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'error';
+
+export type GatewayRpcMethod = 'agents.list' | 'chat.send' | 'chat.abort' | 'sessions.patch';
+
+export type GatewayRequestFrame = {
+  id: string;
+  type: 'rpc';
+  method: GatewayRpcMethod | (string & {});
+  params?: Record<string, unknown>;
+  token?: string;
+};
+
+export type GatewayRpcResultFrame = {
+  id: string;
+  type: 'rpc_result';
+  result: unknown;
+  [key: string]: unknown;
+};
+
+export type GatewayRpcErrorFrame = {
+  id: string;
+  type: 'rpc_error';
+  error: {
+    message?: string;
+    code?: string;
+    data?: unknown;
+    [key: string]: unknown;
+  };
+  [key: string]: unknown;
+};
+
+export type GatewayEventType = 'presence' | 'heartbeat' | 'chat' | 'agent' | (string & {});
+
+export type GatewayEventFrame = {
+  type: 'event';
+  event: GatewayEventType;
+  data?: Record<string, unknown>;
+  [key: string]: unknown;
+};
+
+export type GatewayAuthFrame = {
+  type: 'auth';
+  token: string;
+};
+
+export type GatewayPingFrame = {
+  type: 'ping';
+  ts: number;
+};
+
+export type GatewayPongFrame = {
+  type: 'pong';
+  ts?: number;
+  [key: string]: unknown;
+};
+
+export type GatewayWireFrame =
+  | GatewayRpcResultFrame
+  | GatewayRpcErrorFrame
+  | GatewayEventFrame
+  | GatewayPongFrame
+  | Record<string, unknown>;
+
+export type AgentStatusUpdate = {
+  agentId: string;
+  status: AgentStatus;
+  error?: string | null;
+};
+
+export type NormalizedChatChunk = {
+  agentId: string;
+  text: string;
+};
+
+export type NormalizedChatMessage = {
+  message: ChatMessage;
+};
+
+export type NormalizedEvent = {
+  eventType: GatewayEventType;
+  statusUpdates: AgentStatusUpdate[];
+  chatChunks: NormalizedChatChunk[];
+  chatMessages: NormalizedChatMessage[];
+  activityItems: Omit<ActivityItem, 'id'>[];
+};

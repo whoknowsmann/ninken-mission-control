@@ -14,7 +14,7 @@ type ConnectionState = {
   setGatewayUrl: (gatewayUrl: string) => void;
   setToken: (token: string) => void;
   setRememberToken: (remember: boolean) => void;
-  connect: () => Promise<void>;
+  connect: () => Promise<boolean>;
   disconnect: () => void;
   setStatus: (status: ConnectionStatus) => void;
   setLastError: (err: string | null) => void;
@@ -47,7 +47,7 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
 
     if (!gatewayUrl.startsWith('ws://') && !gatewayUrl.startsWith('wss://')) {
       set({ status: 'error', lastError: 'Gateway URL must start with ws:// or wss://' });
-      return;
+      return false;
     }
 
     if (rememberToken) {
@@ -55,8 +55,14 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
     }
 
     set({ status: 'connecting', lastError: null });
+    return true;
   },
   disconnect: () => {
+    const { rememberToken } = get();
+    if (!rememberToken) {
+      clearRememberedToken();
+      set({ token: '' });
+    }
     set({ status: 'disconnected', lastError: null });
   },
   setStatus: (status) => set({ status }),

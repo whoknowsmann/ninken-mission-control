@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { GearIcon } from '@radix-ui/react-icons';
 import { ConnectionStatus } from './components/ConnectionStatus';
 import { AgentCard } from './components/AgentCard';
@@ -7,47 +7,83 @@ import { SettingsModal } from './components/SettingsModal';
 import { useAgentsStore } from './stores/agents';
 import { useConnectionStore } from './stores/connection';
 import { useActivityStore } from './stores/activity';
-import { createGatewayClient } from './lib/gateway/client';
+import { createGatewayClient, parseAgentsList } from './lib/gateway/client';
+
+const makeId = () => Math.random().toString(36).slice(2, 10);
 
 function useGateway() {
-  const hydrateAgents = useAgentsStore((state) => state.hydrateAgents);
   const appendChatMessage = useAgentsStore((state) => state.appendChatMessage);
   const appendStreamingChunk = useAgentsStore((state) => state.appendStreamingChunk);
   const setAgentStatus = useAgentsStore((state) => state.setAgentStatus);
-  const setAgentSettings = useAgentsStore((state) => state.setAgentSettings);
   const setAgentLastMessage = useAgentsStore((state) => state.setAgentLastMessage);
   const addActivity = useActivityStore((state) => state.addActivity);
+  const setStatus = useConnectionStore((state) => state.setStatus);
+  const setLastError = useConnectionStore((state) => state.setLastError);
+  const lastHeartbeatAt = useRef(0);
 
-  return useMemo(
-    () =>
-      createGatewayClient({
-        onAgentsHydrate: hydrateAgents,
-        onChatMessage: (message) => {
-          appendChatMessage(message);
-          setAgentLastMessage(message.agentId, message.text);
-        },
-        onStreamingChunk: (agentId, chunk) => {
-          appendStreamingChunk(agentId, chunk);
-          const chats = useAgentsStore.getState().chatsByAgentId[agentId] ?? [];
-          const lastAgent = [...chats].reverse().find((msg) => msg.role === 'agent');
-          if (lastAgent) {
-            setAgentLastMessage(agentId, `${lastAgent.text}${chunk}`);
-          }
-        },
-        onAgentStatus: setAgentStatus,
-        onActivity: addActivity,
-        onAgentSettings: setAgentSettings
-      }),
-    [addActivity, appendChatMessage, appendStreamingChunk, hydrateAgents, setAgentLastMessage, setAgentSettings, setAgentStatus]
-  );
+  return useMemo(() => {
+    const gateway = createGatewayClient();
+
+    gateway.onStatus((status, message) => {
+      if (status === 'connected') {
+        setStatus('connected');
+      } else if (status === 'connecting') {
+        setStatus('connecting');
+      } else if (status === 'disconnected') {
+        setStatus('disconnected');
+      } else if (status === 'error') {
+        setStatus('error');
+        setLastError(message ?? 'Gateway connection error.');
+      }
+    });
+
+    gateway.onEvent((normalized) => {
+      for (const update of normalized.statusUpdates) {
+        setAgentStatus(update.agentId, update.status, update.error ?? null);
+      }
+
+      for (const chunk of normalized.chatChunks) {
+        appendStreamingChunk(chunk.agentId, chunk.text);
+        const chats = useAgentsStore.getState().chatsByAgentId[chunk.agentId] ?? [];
+        const lastAgent = [...chats].reverse().find((msg) => msg.role === 'agent');
+        if (lastAgent) {
+          setAgentLastMessage(chunk.agentId, lastAgent.text);
+        }
+      }
+
+      for (const chat of normalized.chatMessages) {
+        appendChatMessage(chat.message);
+        setAgentLastMessage(chat.message.agentId, chat.message.text);
+      }
+
+      for (const item of normalized.activityItems) {
+        if (item.type === 'heartbeat') {
+          const now = Date.now();
+          if (now - lastHeartbeatAt.current < 15_000) continue;
+          lastHeartbeatAt.current = now;
+        }
+        addActivity({ ...item, id: makeId() });
+      }
+    });
+
+    return gateway;
+  }, [addActivity, appendChatMessage, appendStreamingChunk, setAgentLastMessage, setAgentStatus, setLastError, setStatus]);
 }
 
 export default function App() {
   const gateway = useGateway();
-  const { status, openSettings, setStatus, setLastError, connect, disconnect } = useConnectionStore();
+  const { status, gatewayUrl, token, openSettings, setLastError, connect, disconnect } = useConnectionStore();
   const clearTokenSensitiveDataOnDisconnect = useAgentsStore((state) => state.clearTokenSensitiveDataOnDisconnect);
+  const setAgentStatus = useAgentsStore((state) => state.setAgentStatus);
+  const setAgentSettings = useAgentsStore((state) => state.setAgentSettings);
+  const appendChatMessage = useAgentsStore((state) => state.appendChatMessage);
   const agents = useAgentsStore((state) => state.agentOrder.map((id) => state.agentsById[id]));
   const chatsByAgentId = useAgentsStore((state) => state.chatsByAgentId);
+  const addActivity = useActivityStore((state) => state.addActivity);
+
+  useEffect(() => {
+    return () => gateway.disconnect();
+  }, [gateway]);
 
   return (
     <div className="mx-auto min-h-screen max-w-6xl px-4 py-6">
@@ -72,9 +108,39 @@ export default function App() {
               key={agent.id}
               agent={agent}
               messages={chatsByAgentId[agent.id] ?? []}
-              onSendChat={(targetAgent, text) => gateway.sendChat(targetAgent, text)}
-              onStop={(targetAgent) => gateway.stop(targetAgent)}
-              onUpdateSettings={(targetAgent, settings) => gateway.patchSettings(targetAgent, settings)}
+              onSendChat={async (targetAgent, text) => {
+                appendChatMessage({ id: makeId(), agentId: targetAgent.id, role: 'user', text, ts: Date.now() });
+                try {
+                  await gateway.call('chat.send', { sessionKey: targetAgent.sessionKey, message: text });
+                } catch {
+                  setLastError('Unable to send chat message.');
+                }
+              }}
+              onStop={async (targetAgent) => {
+                setAgentStatus(targetAgent.id, 'idle', null);
+                try {
+                  await gateway.call('chat.abort', { sessionKey: targetAgent.sessionKey });
+                } catch {
+                  setLastError('Unable to abort run.');
+                }
+              }}
+              onUpdateSettings={async (targetAgent, settings) => {
+                setAgentSettings(targetAgent.id, settings);
+                try {
+                  await gateway.call('sessions.patch', { key: targetAgent.sessionKey, model: settings.model, thinking: settings.thinking });
+                  addActivity({
+                    id: makeId(),
+                    ts: Date.now(),
+                    agentId: targetAgent.id,
+                    agentName: targetAgent.name,
+                    type: 'settings',
+                    summary: `Updated settings: ${settings.model}, thinking ${settings.thinking}.`,
+                    meta: settings
+                  });
+                } catch {
+                  setLastError('Unable to update session settings.');
+                }
+              }}
             />
           ))}
         </section>
@@ -84,15 +150,25 @@ export default function App() {
 
       <SettingsModal
         onConnect={async () => {
-          await connect();
-          const current = useConnectionStore.getState().status;
-          if (current !== 'connecting') return;
+          const canConnect = await connect();
+          if (!canConnect) return;
+
           try {
-            gateway.connect();
-            setStatus('connected');
+            await gateway.connect({ gatewayUrl, token, authMode: 'frame' });
+            const result = await gateway.call('agents.list', {});
+            const agents = parseAgentsList(result);
+            useAgentsStore.getState().hydrateAgents(agents);
+            addActivity({
+              id: makeId(),
+              ts: Date.now(),
+              agentId: 'gateway',
+              agentName: 'Gateway',
+              type: 'presence',
+              summary: 'Connected to gateway.'
+            });
           } catch {
-            setStatus('error');
-            setLastError('Unable to establish mock connection.');
+            useConnectionStore.getState().setStatus('error');
+            setLastError('Unable to establish gateway connection.');
           }
         }}
         onDisconnect={() => {
