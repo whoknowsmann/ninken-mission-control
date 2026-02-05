@@ -1,8 +1,14 @@
 import { useEffect, useRef } from 'react';
-import type { ChatMessage } from '../lib/gateway/types';
 import clsx from 'clsx';
 
-export function ChatOutput({ messages }: { messages: ChatMessage[] }) {
+type Message = {
+  id: string;
+  role: 'user' | 'agent' | 'system';
+  text: string;
+  ts: number;
+};
+
+export function ChatOutput({ messages }: { messages: Message[] }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {

@@ -3,7 +3,7 @@ import type { ActivityItem, ActivityType } from '../lib/gateway/types';
 
 type ActivityFilter = {
   selectedAgentId: string | 'all';
-  selectedTypes: ActivityType[] | ['all'];
+  selectedTypes: (ActivityType | 'all')[];
 };
 
 type ActivityState = {
