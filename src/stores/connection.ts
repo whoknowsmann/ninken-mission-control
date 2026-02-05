@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { clearRememberedToken, getStoredGatewayUrl, loadRememberedToken, saveGatewayUrl, saveRememberedToken } from '../lib/storage';
 import type { ConnectionStatus } from '../lib/gateway/types';
+import type { GatewayController } from '../lib/gateway/client';
 
 type ConnectionState = {
   status: ConnectionStatus;
@@ -14,6 +15,7 @@ type ConnectionState = {
   setGatewayUrl: (gatewayUrl: string) => void;
   setToken: (token: string) => void;
   setRememberToken: (remember: boolean) => void;
+  setGatewayController: (controller: GatewayController | null) => void;
   connect: () => Promise<void>;
   disconnect: () => void;
   setStatus: (status: ConnectionStatus) => void;
@@ -21,6 +23,18 @@ type ConnectionState = {
 };
 
 const rememberedToken = loadRememberedToken();
+
+let gatewayController: GatewayController | null = null;
+
+const isValidGatewayUrl = (value: string): boolean => {
+  if (!value.startsWith('ws://') && !value.startsWith('wss://')) return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'ws:' || url.protocol === 'wss:';
+  } catch {
+    return false;
+  }
+};
 
 export const useConnectionStore = create<ConnectionState>((set, get) => ({
   status: 'disconnected',
@@ -42,11 +56,19 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
       clearRememberedToken();
     }
   },
+  setGatewayController: (controller) => {
+    gatewayController = controller;
+  },
   connect: async () => {
     const { gatewayUrl, token, rememberToken } = get();
 
-    if (!gatewayUrl.startsWith('ws://') && !gatewayUrl.startsWith('wss://')) {
-      set({ status: 'error', lastError: 'Gateway URL must start with ws:// or wss://' });
+    if (!isValidGatewayUrl(gatewayUrl)) {
+      set({ status: 'error', lastError: 'Gateway URL must be a valid ws:// or wss:// URL.' });
+      return;
+    }
+
+    if (!gatewayController) {
+      set({ status: 'error', lastError: 'Gateway client is unavailable.' });
       return;
     }
 
@@ -55,9 +77,21 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
     }
 
     set({ status: 'connecting', lastError: null });
+
+    try {
+      await gatewayController.connect({ gatewayUrl, token });
+      set({ status: 'connected', lastError: null });
+    } catch {
+      set({ status: 'error', lastError: 'Unable to connect to gateway.' });
+      if (!rememberToken) {
+        set({ token: '' });
+      }
+    }
   },
   disconnect: () => {
-    set({ status: 'disconnected', lastError: null });
+    gatewayController?.disconnect();
+    const rememberToken = get().rememberToken;
+    set({ status: 'disconnected', lastError: null, ...(rememberToken ? {} : { token: '' }) });
   },
   setStatus: (status) => set({ status }),
   setLastError: (lastError) => set({ lastError })

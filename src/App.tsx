@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo } from 'react';
 import { GearIcon } from '@radix-ui/react-icons';
 import { ConnectionStatus } from './components/ConnectionStatus';
 import { AgentCard } from './components/AgentCard';
@@ -17,6 +17,8 @@ function useGateway() {
   const setAgentSettings = useAgentsStore((state) => state.setAgentSettings);
   const setAgentLastMessage = useAgentsStore((state) => state.setAgentLastMessage);
   const addActivity = useActivityStore((state) => state.addActivity);
+  const setStatus = useConnectionStore((state) => state.setStatus);
+  const setLastError = useConnectionStore((state) => state.setLastError);
 
   return useMemo(
     () =>
@@ -36,18 +38,40 @@ function useGateway() {
         },
         onAgentStatus: setAgentStatus,
         onActivity: addActivity,
-        onAgentSettings: setAgentSettings
+        onAgentSettings: setAgentSettings,
+        onConnectionChange: (status, reason) => {
+          setStatus(status);
+          if (status === 'error') {
+            setLastError(reason ?? 'Gateway error.');
+            addActivity({
+              id: `conn-${Date.now()}`,
+              ts: Date.now(),
+              agentId: 'system',
+              agentName: 'Gateway',
+              type: 'error',
+              summary: reason ?? 'Gateway error.'
+            });
+          }
+          if ((status === 'error' || status === 'disconnected') && !useConnectionStore.getState().rememberToken) {
+            useConnectionStore.getState().setToken('');
+          }
+        }
       }),
-    [addActivity, appendChatMessage, appendStreamingChunk, hydrateAgents, setAgentLastMessage, setAgentSettings, setAgentStatus]
+    [addActivity, appendChatMessage, appendStreamingChunk, hydrateAgents, setAgentLastMessage, setAgentSettings, setAgentStatus, setLastError, setStatus]
   );
 }
 
 export default function App() {
   const gateway = useGateway();
-  const { status, openSettings, setStatus, setLastError, connect, disconnect } = useConnectionStore();
+  const { status, openSettings, connect, disconnect, setGatewayController } = useConnectionStore();
   const clearTokenSensitiveDataOnDisconnect = useAgentsStore((state) => state.clearTokenSensitiveDataOnDisconnect);
   const agents = useAgentsStore((state) => state.agentOrder.map((id) => state.agentsById[id]));
   const chatsByAgentId = useAgentsStore((state) => state.chatsByAgentId);
+
+  useEffect(() => {
+    setGatewayController(gateway);
+    return () => setGatewayController(null);
+  }, [gateway, setGatewayController]);
 
   return (
     <div className="mx-auto min-h-screen max-w-6xl px-4 py-6">
@@ -72,9 +96,9 @@ export default function App() {
               key={agent.id}
               agent={agent}
               messages={chatsByAgentId[agent.id] ?? []}
-              onSendChat={(targetAgent, text) => gateway.sendChat(targetAgent, text)}
-              onStop={(targetAgent) => gateway.stop(targetAgent)}
-              onUpdateSettings={(targetAgent, settings) => gateway.patchSettings(targetAgent, settings)}
+              onSendChat={(targetAgent, text) => void gateway.sendChat(targetAgent, text)}
+              onStop={(targetAgent) => void gateway.stop(targetAgent)}
+              onUpdateSettings={(targetAgent, settings) => void gateway.patchSettings(targetAgent, settings)}
             />
           ))}
         </section>
@@ -85,18 +109,8 @@ export default function App() {
       <SettingsModal
         onConnect={async () => {
           await connect();
-          const current = useConnectionStore.getState().status;
-          if (current !== 'connecting') return;
-          try {
-            gateway.connect();
-            setStatus('connected');
-          } catch {
-            setStatus('error');
-            setLastError('Unable to establish mock connection.');
-          }
         }}
         onDisconnect={() => {
-          gateway.disconnect();
           disconnect();
           clearTokenSensitiveDataOnDisconnect();
         }}
