@@ -5,17 +5,10 @@ import type {
   ChatMessage,
   GatewayEventFrame,
   GatewayInboundFrame,
-  GatewayRpcError,
-  GatewayRpcResult,
+  GatewayResponse,
   HeartbeatEventData,
   PresenceEventData
 } from './types';
-import {
-  validateFrame,
-  RpcResultFrameSchema,
-  RpcErrorFrameSchema,
-  EventFrameSchema
-} from './schemas';
 
 const makeId = () => Math.random().toString(36).slice(2, 10);
 
@@ -24,30 +17,26 @@ const asObject = (value: unknown): Record<string, unknown> | null => {
   return value as Record<string, unknown>;
 };
 
-export const isRpcResultFrame = (frame: GatewayInboundFrame): frame is GatewayRpcResult => {
-  return RpcResultFrameSchema.safeParse(frame).success;
-};
-
-export const isRpcErrorFrame = (frame: GatewayInboundFrame): frame is GatewayRpcError => {
-  return RpcErrorFrameSchema.safeParse(frame).success;
+// OpenClaw protocol uses type:"res" for responses
+export const isResponseFrame = (frame: GatewayInboundFrame): frame is GatewayResponse => {
+  return frame.type === 'res' && typeof frame.id === 'string';
 };
 
 export const isEventFrame = (frame: GatewayInboundFrame): frame is GatewayEventFrame => {
-  return EventFrameSchema.safeParse(frame).success;
+  return frame.type === 'event' && typeof (frame as GatewayEventFrame).event === 'string';
 };
 
 export const parseFrame = (raw: string): GatewayInboundFrame | null => {
   try {
     const parsed = JSON.parse(raw);
-    const result = validateFrame(parsed);
-    if (result && result.success) {
-      return result.data as GatewayInboundFrame;
+    // Basic validation - must have a type field
+    if (!parsed || typeof parsed !== 'object' || typeof parsed.type !== 'string') {
+      if (import.meta.env.DEV) {
+        console.warn('[Gateway] Invalid frame - missing type:', parsed);
+      }
+      return null;
     }
-    // Log validation failures in development
-    if (import.meta.env.DEV && result) {
-      console.warn('[Gateway] Invalid frame:', result.error?.issues);
-    }
-    return null;
+    return parsed as GatewayInboundFrame;
   } catch {
     return null;
   }

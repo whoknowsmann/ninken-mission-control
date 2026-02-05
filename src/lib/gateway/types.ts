@@ -45,57 +45,33 @@ export type ActivityItem = {
 
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'error';
 
-export type AuthMode = 'frame' | 'per_message';
-
-export type GatewayRpcRequest<TParams = Record<string, unknown>> = {
+// OpenClaw/Clawdbot gateway protocol types
+export type GatewayRequest = {
+  type: 'req';
   id: string;
-  type: 'rpc';
   method: string;
-  params: TParams;
-  token?: string;
+  params?: Record<string, unknown>;
 };
 
-export type GatewayRpcResult<TResult = unknown> = {
+export type GatewayResponse = {
+  type: 'res';
   id: string;
-  type: 'rpc_result';
-  result: TResult;
+  ok: boolean;
+  payload?: unknown;
+  error?: { message?: string; code?: string };
 };
 
-export type GatewayRpcError = {
-  id: string;
-  type: 'rpc_error';
-  error: {
-    message: string;
-    code?: string;
-    data?: unknown;
-  };
-};
-
-export type GatewayAuthFrame = {
-  type: 'auth';
-  token: string;
-};
-
-export type GatewayPingFrame = {
-  type: 'ping';
-  ts: number;
-};
-
-export type GatewayPongFrame = {
-  type: 'pong';
-  ts?: number;
-};
-
-export type GatewayEventName = 'presence' | 'heartbeat' | 'chat' | 'agent' | string;
-
-export type GatewayEventFrame<TData = Record<string, unknown>> = {
+export type GatewayEventFrame = {
   type: 'event';
-  event: GatewayEventName;
-  data: TData;
+  event: string;
+  payload?: Record<string, unknown>;
+  seq?: number;
+  stateVersion?: number;
 };
 
-export type GatewayInboundFrame = GatewayRpcResult | GatewayRpcError | GatewayEventFrame | GatewayPongFrame | Record<string, unknown>;
+export type GatewayInboundFrame = GatewayResponse | GatewayEventFrame | { type: string; [key: string]: unknown };
 
+// Event data types
 export type PresenceEventData = {
   agentId?: string;
   id?: string;

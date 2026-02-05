@@ -1,7 +1,6 @@
 import {
   isEventFrame,
-  isRpcErrorFrame,
-  isRpcResultFrame,
+  isResponseFrame,
   normalizeAgentEvent,
   normalizeChatEvent,
   normalizeHeartbeat,
@@ -13,11 +12,9 @@ import type {
   AgentSummary,
   AgentsListItem,
   AgentsListResult,
-  AuthMode,
   ChatMessage,
   ConnectionStatus,
   GatewayEventFrame,
-  GatewayRpcRequest,
   ThinkingLevel
 } from './types';
 
@@ -29,7 +26,6 @@ type ConnectParams = {
 };
 
 type GatewayClientOptions = {
-  authMode?: AuthMode;
   connectTimeoutMs?: number;
   staleAfterMs?: number;
   pingIntervalMs?: number;
@@ -41,11 +37,26 @@ type PendingCall = {
   timeout: number;
 };
 
+// OpenClaw/Clawdbot gateway protocol types
+type GatewayRequest = {
+  type: 'req';
+  id: string;
+  method: string;
+  params?: Record<string, unknown>;
+};
+
+type GatewayResponse = {
+  type: 'res';
+  id: string;
+  ok: boolean;
+  payload?: unknown;
+  error?: { message?: string; code?: string };
+};
+
 export class GatewayClient {
   private ws: WebSocket | null = null;
   private token = '';
   private gatewayUrl = '';
-  private authMode: AuthMode;
   private reconnectAttempt = 0;
   private shouldReconnect = false;
   private manuallyDisconnected = false;
@@ -63,7 +74,6 @@ export class GatewayClient {
   private statusHandlers = new Set<(status: ConnectionStatus, reason?: string | null) => void>();
 
   constructor(options: GatewayClientOptions = {}) {
-    this.authMode = options.authMode ?? 'frame';
     this.connectTimeoutMs = options.connectTimeoutMs ?? 9_000;
     this.staleAfterMs = options.staleAfterMs ?? 60_000;
     this.pingIntervalMs = options.pingIntervalMs ?? 20_000;
@@ -110,12 +120,12 @@ export class GatewayClient {
     }
 
     const id = makeId();
-    const request: GatewayRpcRequest<TParams> = {
+    // Use OpenClaw protocol: type:"req" instead of type:"rpc"
+    const request: GatewayRequest = {
       id,
-      type: 'rpc',
+      type: 'req',
       method,
-      params,
-      ...(this.authMode === 'per_message' ? { token: this.token } : {})
+      params: params as Record<string, unknown>
     };
 
     this.ws.send(JSON.stringify(request));
@@ -152,18 +162,61 @@ export class GatewayClient {
         reject(new Error('Connection timeout')); 
       }, this.connectTimeoutMs);
 
-      ws.onopen = () => {
-        this.clearConnectTimer();
+      ws.onopen = async () => {
         this.lastDataTs = Date.now();
-        this.reconnectAttempt = 0;
-
-        if (this.authMode === 'frame' && this.token) {
-          ws.send(JSON.stringify({ type: 'auth', token: this.token }));
+        
+        // Send OpenClaw connect handshake
+        try {
+          const connectId = makeId();
+          const connectRequest: GatewayRequest = {
+            type: 'req',
+            id: connectId,
+            method: 'connect',
+            params: {
+              minProtocol: 1,
+              maxProtocol: 1,
+              client: {
+                id: 'ninken-console',
+                displayName: 'Ninken Console',
+                version: '0.1.0',
+                platform: 'web',
+                mode: 'operator'
+              },
+              auth: this.token ? { token: this.token } : undefined
+            }
+          };
+          
+          ws.send(JSON.stringify(connectRequest));
+          
+          // Wait for connect response
+          const connectResponse = await new Promise<GatewayResponse>((res, rej) => {
+            const timeout = window.setTimeout(() => {
+              this.pending.delete(connectId);
+              rej(new Error('Connect handshake timeout'));
+            }, 10_000);
+            
+            this.pending.set(connectId, { 
+              resolve: (value) => res(value as GatewayResponse), 
+              reject: rej, 
+              timeout 
+            });
+          });
+          
+          if (!connectResponse.ok) {
+            const errMsg = connectResponse.error?.message ?? 'Connect rejected';
+            throw new Error(errMsg);
+          }
+          
+          this.clearConnectTimer();
+          this.reconnectAttempt = 0;
+          this.startHealthTimers();
+          this.setStatus('connected', null);
+          resolve();
+        } catch (err) {
+          this.clearConnectTimer();
+          ws.close();
+          reject(err);
         }
-
-        this.startHealthTimers();
-        this.setStatus('connected', null);
-        resolve();
       };
 
       ws.onmessage = (event) => {
@@ -197,26 +250,27 @@ export class GatewayClient {
     const frame = parseFrame(raw);
     if (!frame) return;
 
-    if (frame.type === 'pong') return;
+    // Handle pong/tick keepalive
+    if (frame.type === 'pong' || (frame.type === 'event' && (frame as GatewayEventFrame).event === 'tick')) {
+      return;
+    }
 
-    if (isRpcResultFrame(frame)) {
+    // Handle response frames (OpenClaw uses type:"res")
+    if (isResponseFrame(frame)) {
       const pending = this.pending.get(frame.id);
       if (!pending) return;
       window.clearTimeout(pending.timeout);
       this.pending.delete(frame.id);
-      pending.resolve(frame.result);
+      
+      if (frame.ok) {
+        pending.resolve(frame.payload);
+      } else {
+        pending.reject(new Error(frame.error?.message || 'Gateway request failed'));
+      }
       return;
     }
 
-    if (isRpcErrorFrame(frame)) {
-      const pending = this.pending.get(frame.id);
-      if (!pending) return;
-      window.clearTimeout(pending.timeout);
-      this.pending.delete(frame.id);
-      pending.reject(new Error(frame.error?.message || 'Gateway RPC error'));
-      return;
-    }
-
+    // Handle event frames
     if (isEventFrame(frame)) {
       for (const handler of this.eventHandlers) {
         handler(frame);
@@ -237,9 +291,11 @@ export class GatewayClient {
   }
 
   private startHealthTimers(): void {
+    // Gateway sends tick events, but we can also ping
     this.pingTimer = window.setInterval(() => {
       if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-      this.ws.send(JSON.stringify({ type: 'ping', ts: Date.now() }));
+      // Send a health check request
+      this.ws.send(JSON.stringify({ type: 'req', id: makeId(), method: 'health', params: {} }));
     }, this.pingIntervalMs);
 
     this.staleTimer = window.setInterval(() => {
@@ -338,7 +394,7 @@ export function createGatewayClient(bindings: GatewayBindings): GatewayControlle
 
   client.onEvent((frame) => {
     if (frame.event === 'presence') {
-      const updates = normalizePresenceUpdates(frame.data as Record<string, unknown>);
+      const updates = normalizePresenceUpdates(frame.payload as Record<string, unknown>);
       for (const update of updates) {
         bindings.onAgentStatus?.(update.agentId, update.status, null);
       }
@@ -353,8 +409,8 @@ export function createGatewayClient(bindings: GatewayBindings): GatewayControlle
       return;
     }
 
-    if (frame.event === 'heartbeat') {
-      const heartbeat = normalizeHeartbeat(frame.data as Record<string, unknown>);
+    if (frame.event === 'heartbeat' || frame.event === 'tick') {
+      const heartbeat = normalizeHeartbeat(frame.payload as Record<string, unknown>);
       if (heartbeat.agentId && heartbeat.status) {
         bindings.onAgentStatus?.(heartbeat.agentId, heartbeat.status, null);
       }
@@ -374,7 +430,7 @@ export function createGatewayClient(bindings: GatewayBindings): GatewayControlle
     }
 
     if (frame.event === 'chat') {
-      const chat = normalizeChatEvent(frame.data as Record<string, unknown>);
+      const chat = normalizeChatEvent(frame.payload as Record<string, unknown>);
       for (const message of chat.messages) {
         bindings.onChatMessage?.(message);
       }
@@ -393,7 +449,7 @@ export function createGatewayClient(bindings: GatewayBindings): GatewayControlle
     }
 
     if (frame.event === 'agent') {
-      const evt = normalizeAgentEvent(frame.data as Record<string, unknown>);
+      const evt = normalizeAgentEvent(frame.payload as Record<string, unknown>);
       if (!evt) return;
       if (evt.event === 'run_started') {
         bindings.onAgentStatus?.(evt.agentId, 'running', null);
@@ -430,9 +486,33 @@ export function createGatewayClient(bindings: GatewayBindings): GatewayControlle
       }
 
       await client.connect({ gatewayUrl, token });
-      const result = await client.call<AgentsListResult>('agents.list', {});
-      const list = result.agents ?? result.items ?? [];
-      const agents = list.filter((item): item is AgentsListItem => typeof item.id === 'string').map(toAgentSummary);
+      
+      // Fetch agents list - try multiple possible methods
+      let agents: AgentSummary[] = [];
+      try {
+        const result = await client.call<AgentsListResult>('agents.list', {});
+        const list = result?.agents ?? result?.items ?? [];
+        agents = list.filter((item): item is AgentsListItem => typeof item?.id === 'string').map(toAgentSummary);
+      } catch {
+        // agents.list might not be supported, try sessions.list
+        try {
+          const sessResult = await client.call<{ sessions?: Array<{ key: string; label?: string; status?: string }> }>('sessions.list', {});
+          agents = (sessResult?.sessions ?? []).map((s) => ({
+            id: s.key,
+            name: s.label ?? s.key,
+            status: (s.status === 'running' ? 'running' : 'idle') as AgentSummary['status'],
+            lastMessage: null,
+            lastUpdatedAt: Date.now(),
+            sessionKey: s.key,
+            model: 'claude-sonnet-4',
+            thinking: 'medium' as const,
+            error: null
+          }));
+        } catch {
+          // No agent list available
+        }
+      }
+      
       bindings.onAgentsHydrate?.(agents);
       bindings.onActivity?.({
         id: makeId(),
@@ -440,7 +520,7 @@ export function createGatewayClient(bindings: GatewayBindings): GatewayControlle
         agentId: 'system',
         agentName: 'Gateway',
         type: 'presence',
-        summary: 'Connected to gateway.'
+        summary: `Connected to gateway. ${agents.length} agent(s) found.`
       });
     },
     disconnect: () => {
@@ -458,12 +538,19 @@ export function createGatewayClient(bindings: GatewayBindings): GatewayControlle
         }, 200);
         return;
       }
-      await client.call('chat.send', { sessionKey: agent.sessionKey, message: text });
+      // OpenClaw uses "agent" method for sending messages
+      await client.call('agent', { sessionKey: agent.sessionKey, message: text });
     },
     stop: async (agent) => {
       bindings.onAgentStatus?.(agent.id, 'idle', null);
       if (useMock) return;
-      await client.call('chat.abort', { sessionKey: agent.sessionKey });
+      // Try abort method
+      try {
+        await client.call('agent.abort', { sessionKey: agent.sessionKey });
+      } catch {
+        // Fallback
+        await client.call('chat.abort', { sessionKey: agent.sessionKey }).catch(() => {});
+      }
     },
     patchSettings: async (agent, settings) => {
       bindings.onAgentSettings?.(agent.id, settings);
